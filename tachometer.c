@@ -5,14 +5,29 @@
 #include "hardware/pio.h"
 #include "hardware/clocks.h"
 #include "ws2812.pio.h"
+#include "tach.pio.h"
 
-#define TACH_PIN 27
+#define TACH_PIN 16
 #define CYLINDERS 4
 #define MAX_RPM 8000
 
 #define PULSES_PER_REV 2
 
 #define REDLINE_LED_NUM 2
+
+#define clk_div 125
+#define sys_hz SYS_CLK_HZ
+#define pio_hz (int)(sys_hz / clk_div)
+#define ns_per_count (int)(2000000000.0 / pio_hz)
+
+// simple MIN / MAX helpers
+#ifndef MIN
+#define MIN(a,b) ((a) < (b) ? (a) : (b))
+#endif
+#ifndef MAX
+#define MAX(a,b) ((a) > (b) ? (a) : (b))
+#endif
+
 
 struct Color {
     uint8_t r;
@@ -61,6 +76,11 @@ const size_t NUM_SEGMENTS = sizeof(PALLETE) / sizeof(PALLETE[0]);
 #if WS2812_PIN >= NUM_BANK0_GPIOS
 #error Attempting to use a pin>=32 on a platform that does not support it
 #endif
+
+
+volatile uint32_t last_pulse_time = 0;
+volatile uint32_t delta_time_us = 0;
+
 
 static inline void put_pixel(PIO pio, uint sm, uint32_t pixel_grb) {
     pio_sm_put_blocking(pio, sm, pixel_grb << 8u);
@@ -148,24 +168,37 @@ void set_rpm(int rpm, PIO pio, uint sm, uint len, float brightness) {
     }
 }
 
+
+
 int main() {
     //set_sys_clock_48();
     stdio_init_all();
     printf("WS2812 Smoke Test, using pin %d\n", WS2812_PIN);
 
     // todo get free sm
-    PIO pio;
-    uint sm;
-    uint offset;
+    PIO pio_0;
+    uint sm_0;
+    uint offset_0;
 
     // This will find a free pio and state machine for our program and load it for us
     // We use pio_claim_free_sm_and_add_program_for_gpio_range (for_gpio_range variant)
     // so we will get a PIO instance suitable for addressing gpios >= 32 if needed and supported by the hardware
-    bool success = pio_claim_free_sm_and_add_program_for_gpio_range(&ws2812_program, &pio, &sm, &offset, WS2812_PIN, 1, true);
+    bool success = pio_claim_free_sm_and_add_program_for_gpio_range(&ws2812_program, &pio_0, &sm_0, &offset_0, WS2812_PIN, 1, true);
     hard_assert(success);
 
-    ws2812_program_init(pio, sm, offset, WS2812_PIN, 800000, IS_RGBW);
+    ws2812_program_init(pio_0, sm_0, offset_0, WS2812_PIN, 800000, IS_RGBW);
 
+    // get a free state machine for the tach pio program
+    PIO pio_1;
+    uint sm_1;
+    uint offset_1;
+
+    success = pio_claim_free_sm_and_add_program_for_gpio_range(&tach_program, &pio_1, &sm_1, &offset_1, TACH_PIN, 1, true);
+    hard_assert(success);
+    
+    tach_program_init(pio_1, sm_1, offset_1, TACH_PIN, clk_div);
+
+    // startup sequence
     int rpm = 0;
     bool sweep_up = true;
     while (1) {
@@ -177,15 +210,39 @@ int main() {
         } else {
             rpm -= 20;
             if (rpm <= 0) {
-                sweep_up = true;
+                break;
             }
         }
 
-        set_rpm(rpm, pio, sm, NUM_PIXELS, 0.1);
+        set_rpm(rpm, pio_0, sm_0, NUM_PIXELS, 0.1);
         sleep_us(50);
         sleep_ms(1);
     }
 
+    
+    while (true) {
+        if (pio_sm_get_rx_fifo_level(pio_1, sm_1)) {
+            uint32_t raw_value = pio_sm_get(pio_1, sm_1);
+            uint32_t cycles_spent = 0xFFFFFFFF - raw_value;
+
+            // The PIO loops take exactly 2 clock cycles per count decrement
+            float total_clock_cycles = (float)cycles_spent * 2.0f;
+            
+            // Convert clock cycles directly into total wave period in nanoseconds
+            float total_period_ns = total_clock_cycles * ns_per_count;
+
+            if (total_period_ns > 0.0f) {
+                // RPM = (60 billion ns / total period of 1 revolution)
+                // Divide by PULSES_PER_REV to account for your engine/sensor setup
+                float rpm = (60000000000LL / total_period_ns) / PULSES_PER_REV;
+                printf("RPM: %.2f\n", rpm);
+            }
+            stdio_flush();
+        }
+        sleep_ms(10);
+    }
+
     // This will free resources and unload our program
-    pio_remove_program_and_unclaim_sm(&ws2812_program, pio, sm, offset);
+    pio_remove_program_and_unclaim_sm(&ws2812_program, pio_0, sm_0, offset_0);
+    pio_remove_program_and_unclaim_sm(&tach_program, pio_1, sm_1, offset_1);
 }

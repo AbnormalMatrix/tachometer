@@ -1,0 +1,61 @@
+.program tach
+
+wrap_target:
+    ; wait for the signal to go low on pin 0
+    wait 0 pin 0
+    ; wait for the signal to go high on pin 0
+    wait 1 pin 0
+
+    ; fill the x register with 1s
+    mov x, !null
+
+high_loop:
+    ; if the pin is still high, continue the loop
+    jmp pin still_high
+    ; otherwise jump to the falling edge logic
+    jmp falling_edge
+
+still_high:
+    ; decrement x and jump back to the high loop
+    jmp x-- high_loop
+
+falling_edge:
+low_loop:
+    ; if the pin is high, jump to the done logic
+    jmp pin done
+    ; otherwise decrement x and jump to the low loop
+    jmp x-- low_loop
+
+done:
+    ; move x into the input shift register
+    mov isr, x
+    ; push the output to the CPU
+    push noblock
+
+    ; jump back to the start
+    jmp wrap_target
+
+% c-sdk {
+static inline void tach_program_init(PIO pio, uint sm, uint offset, uint pin, float clk_div) {
+    pio_sm_config c = tach_program_get_default_config(offset);
+
+    // 1. Set up the GPIO function to connect the pad to the PIO block
+    pio_gpio_init(pio, pin);
+
+    // 2. Set the pin direction to INPUT (false) at the PIO hardware level
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, false);
+
+    // 3. Map the 'in' pins to start at our pin (used by "wait ... pin")
+    sm_config_set_in_pins(&c, pin);
+
+    // 4. Map the 'jmp' pin condition to look at our pin (used by "jmp pin ...")
+    sm_config_set_jmp_pin(&c, pin);
+    
+    // Set the clock divisor
+    sm_config_set_clkdiv(&c, clk_div);
+
+    // Load configuration and start running
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
