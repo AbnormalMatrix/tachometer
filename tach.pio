@@ -30,7 +30,7 @@ done:
     ; move x into the input shift register
     mov isr, x
     ; push the output to the CPU
-    push noblock
+    push block
 
     ; jump back to the start
     jmp wrap_target

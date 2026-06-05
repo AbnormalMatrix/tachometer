@@ -219,27 +219,31 @@ int main() {
         sleep_ms(1);
     }
 
+    printf("Waiting for tach signal on pin %d...\n", TACH_PIN);
+    stdio_flush();
     
     while (true) {
-        if (pio_sm_get_rx_fifo_level(pio_1, sm_1)) {
+        uint32_t fifo_level = pio_sm_get_rx_fifo_level(pio_1, sm_1);
+        if (fifo_level) {
             uint32_t raw_value = pio_sm_get(pio_1, sm_1);
             uint32_t cycles_spent = 0xFFFFFFFF - raw_value;
 
             // The PIO loops take exactly 2 clock cycles per count decrement
             float total_clock_cycles = (float)cycles_spent * 2.0f;
-            
+
             // Convert clock cycles directly into total wave period in nanoseconds
             float total_period_ns = total_clock_cycles * ns_per_count;
 
             if (total_period_ns > 0.0f) {
                 // RPM = (60 billion ns / total period of 1 revolution)
                 // Divide by PULSES_PER_REV to account for your engine/sensor setup
-                float rpm = (60000000000LL / total_period_ns) / PULSES_PER_REV;
+                float rpm = (60000000000.0 / total_period_ns);
                 printf("RPM: %.2f\n", rpm);
+                set_rpm((int)rpm, pio_0, sm_0, NUM_PIXELS, 0.1);
             }
             stdio_flush();
         }
-        sleep_ms(10);
+        // sleep_ms(100);
     }
 
     // This will free resources and unload our program
